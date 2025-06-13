@@ -3,6 +3,13 @@ import { toast } from "react-toastify";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { CameraIcon, CameraOffIcon, X } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface CameraPhotoCaptureProps {
   className?: string;
@@ -18,17 +25,31 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isMirrored, setIsMirrored] = useState<boolean>(true); // Default to mirrored
-  const [zoomLevel, setZoomLevel] = useState<number>(1); // Default zoom level (1x)
+  const [isMirrored, setIsMirrored] = useState<boolean>(true);
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [aspectRatio, setAspectRatio] = useState<number>(4 / 3);
   const isMountedRef = useRef(true);
+  const touchDistanceRef = useRef<number | null>(null);
+
+  const aspectRatioOptions = [
+    { label: "4:3", value: 4 / 3 },
+    { label: "16:9", value: 16 / 9 },
+    { label: "1:1", value: 1 },
+  ];
 
   const startCamera = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
+        video: {
+          facingMode: "user",
+          aspectRatio: aspectRatio,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
       });
       if (!isMountedRef.current) {
         mediaStream.getTracks().forEach((track) => track.stop());
@@ -78,12 +99,10 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
 
   const handleStopCamera = () => {
     if (stream) {
-      console.log("Stopping camera stream");
       stream.getTracks().forEach((track) => track.stop());
       setStream(null);
     }
     if (videoRef.current) {
-      console.log("Pausing and clearing video element");
       videoRef.current.pause();
       videoRef.current.srcObject = null;
     }
@@ -104,9 +123,16 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
       return;
     }
 
-    // Set canvas dimensions to match video
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Set canvas dimensions to maintain aspect ratio
+    const targetWidth = video.videoWidth;
+    const targetHeight = Math.round(targetWidth / aspectRatio);
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    // Calculate source dimensions to maintain aspect ratio
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = Math.round(sourceWidth / aspectRatio);
+    const sourceY = (video.videoHeight - sourceHeight) / 2;
 
     // Apply mirror effect if enabled
     if (isMirrored) {
@@ -115,7 +141,17 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
     }
 
     // Draw the current video frame to the canvas
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    context.drawImage(
+      video,
+      0,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
 
     // Reset transformations
     context.setTransform(1, 0, 0, 1, 0, 0);
@@ -147,14 +183,53 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
     setIsMirrored((prev) => !prev);
   };
 
-  const handleZoomChange = (value: any) => {
-    const newZoom = parseFloat(value);
+  const handleZoomChange = (value: number[]) => {
+    const newZoom = value[0];
     setZoomLevel(newZoom);
     if (videoRef.current) {
       videoRef.current.style.transform = `scale(${newZoom}) ${
         isMirrored ? "scaleX(-1)" : ""
       }`;
+      videoRef.current.style.transition = "transform 0.1s ease-out";
     }
+  };
+
+  // Handle pinch-to-zoom
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const distance = Math.hypot(
+        touch1.clientX - touch2.clientX,
+        touch1.clientY - touch2.clientY
+      );
+      touchDistanceRef.current = distance;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && touchDistanceRef.current !== null) {
+      e.preventDefault();
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const newDistance = Math.hypot(
+        touch1.clientX - touch2.clientX,
+        touch1.clientY - touch2.clientY
+      );
+      const zoomChange = newDistance / touchDistanceRef.current;
+      const newZoom = Math.min(Math.max(zoomLevel * zoomChange, 1), 5);
+      setZoomLevel(newZoom);
+      if (videoRef.current) {
+        videoRef.current.style.transform = `scale(${newZoom}) ${
+          isMirrored ? "scaleX(-1)" : ""
+        }`;
+      }
+      touchDistanceRef.current = newDistance;
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchDistanceRef.current = null;
   };
 
   if (error) {
@@ -162,35 +237,62 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
       <div
         className={`bg-gray-800 flex items-center justify-center p-4 rounded-lg ${className}`}
       >
-        <p className="text-red-500">{error}</p>
+        <p className="text-red-500 text-center">{error}</p>
       </div>
     );
   }
 
   return (
     <div
-      className={`flex flex-col items-center space-y-4 p-4 min-h-screen rounded-lg ${className}`}
+      className={`flex flex-col items-center space-y-4 p-4 min-h-screen w-full max-w-4xl mx-auto ${className}`}
     >
-      <Button onClick={() => (stream ? handleStopCamera() : startCamera())}>
-        {stream ? (
-          <CameraOffIcon className="h-8 w-8" />
-        ) : (
-          <CameraIcon className="h-8 w-8" />
-        )}
-      </Button>
-      <div className="relative max-w-full overflow-hidden rounded-3xl">
+      <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+        <Button
+          onClick={() => (stream ? handleStopCamera() : startCamera())}
+          className="w-full sm:w-auto touch-manipulation"
+        >
+          {stream ? (
+            <CameraOffIcon className="h-8 w-8" />
+          ) : (
+            <CameraIcon className="h-8 w-8" />
+          )}
+        </Button>
+        <Select
+          onValueChange={(value) => setAspectRatio(parseFloat(value))}
+          defaultValue={aspectRatio.toString()}
+        >
+          <SelectTrigger className="w-full sm:w-[180px] touch-manipulation">
+            <SelectValue placeholder="Select aspect ratio" />
+          </SelectTrigger>
+          <SelectContent>
+            {aspectRatioOptions.map((option) => (
+              <SelectItem key={option.label} value={option.value.toString()}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div
+        ref={containerRef}
+        className="relative w-full overflow-hidden rounded-3xl bg-black"
+        style={{ aspectRatio: aspectRatio }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
         <video
           ref={videoRef}
           autoPlay
           playsInline
-          className="w-fit min-h-[80vh]"
+          className="w-full h-full object-cover"
           style={{
             transform: `${isMirrored ? "scaleX(-1)" : ""}`,
             transformOrigin: "center",
           }}
         />
         {stream && (
-          <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex space-x-2">
+          <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 w-full px-4 sm:w-auto">
             <Button onClick={capturePhoto}>Capture Photo</Button>
             <Button
               onClick={toggleMirror}
@@ -203,44 +305,53 @@ export const CameraPhotoCapture: React.FC<CameraPhotoCaptureProps> = ({
       </div>
 
       {stream && (
-        <div className="w-full max-w-md">
-          <label htmlFor="zoom" className="text-white mb-2 block">
+        <div className="w-full max-w-md px-4">
+          <label
+            htmlFor="zoom"
+            className="text-white mb-2 block text-center sm:text-left"
+          >
             Zoom: {zoomLevel.toFixed(1)}x
           </label>
-
           <Slider
             id="zoom"
             min={1}
-            max={3}
+            max={5}
             step={0.1}
             value={[zoomLevel]}
             onValueChange={handleZoomChange}
+            className="touch-manipulation h-8"
           />
         </div>
       )}
 
       {photos.length > 0 && (
-        <div className="w-full max-w-7xl">
-          <div className="flex justify-between items-center mb-2">
+        <div className="w-full px-4">
+          <div className="flex justify-between items-center mb-4">
             <h3 className="text-white text-lg">
               Captured Photos ({photos.length})
             </h3>
-            <Button onClick={clearAllPhotos}>Clear All</Button>
+            <Button onClick={clearAllPhotos} className="touch-manipulation">
+              Clear All
+            </Button>
           </div>
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
             {photos.map((photo) => (
-              <div key={photo.id} className="relative">
+              <div
+                key={photo.id}
+                className="relative"
+                style={{ aspectRatio: aspectRatio }}
+              >
                 <img
                   src={photo.dataUrl}
                   alt="Captured photo"
-                  className="w-full rounded-lg"
+                  className="w-full h-full object-cover rounded-lg"
                 />
                 <Button
                   variant={"destructive"}
                   onClick={() => clearPhoto(photo.id)}
-                  className="absolute top-1 right-1 font-semibold py-0.5 px-1"
+                  className="absolute top-1 right-1 font-semibold p-2 touch-manipulation"
                 >
-                  <X onClick={() => clearPhoto(photo.id)} />
+                  <X />
                 </Button>
               </div>
             ))}
